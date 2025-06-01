@@ -1,105 +1,49 @@
-from typing import Dict, List, Optional
+from __future__ import annotations
 
-from sqlalchemy import create_engine, inspect, select
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import sessionmaker
 
-from .errors import CardInsufficientAvailable, CardInsufficientQuantity
-from .models import Base, Card
+from netdecker.config import DB_CONNECTION_STRING, LOGGER
+from netdecker.models import register_models
+from netdecker.models.base import Base
+
+# Simple module-level database setup
+engine = create_engine(DB_CONNECTION_STRING)
+Session = sessionmaker(engine)
+
+# Track initialization to avoid redundant calls
+_db_initialized = False
 
 
-class SQLiteStore:
-    def __init__(self, conn_string: str) -> None:
-        self.engine = create_engine(conn_string)
-        self.Session = sessionmaker(self.engine)
+def initialize_database() -> bool:
+    """Initialize the database. Call this once at application startup."""
+    global _db_initialized
 
-        # create table if doesn't exist
-        ins = inspect(self.engine)
-        if not ins.has_table("cards"):
-            Base.metadata.create_all(self.engine)
+    if _db_initialized:
+        return True
 
-    def add_cards(self, card_list: Dict[str, int]) -> None:
-        """
-        Upserts Loan Objects into database, edits quantity if present
-        """
+    try:
+        inspector = inspect(engine)
+        register_models()
 
-        with self.Session.begin() as session:
-            for card_name, card_quantity in card_list.items():
-                insert_stmt = insert(Card).values(
-                    name=card_name, quantity=card_quantity, available=card_quantity
-                )
-                do_update_stmt = insert_stmt.on_conflict_do_update(
-                    index_elements=[Card.name],
-                    set_=dict(
-                        quantity=Card.quantity + insert_stmt.excluded.quantity,
-                        available=Card.available + insert_stmt.excluded.quantity,
-                    ),
-                )
-                session.execute(do_update_stmt)
+        # Get all table names from models
+        model_tables = Base.metadata.tables.keys()
+        existing_tables = inspector.get_table_names()
 
-    def delete_cards(self, card_list: Dict[str, int]) -> None:
-        """
-        Removes cards from quantity, available.
-        """
-        with self.Session.begin() as session:
-            for card_name, remove_count in card_list.items():
-                card = session.scalars(
-                    select(Card).where(Card.name == card_name)
-                ).first()
-                if card is None:
-                    continue
-                if remove_count > card.quantity:
-                    raise CardInsufficientQuantity(
-                        name=card.name, requested=remove_count, quantity=card.quantity
-                    )
-                card.quantity -= remove_count
-                if card.quantity < card.available:
-                    card.available = card.quantity
+        # Check which tables need to be created
+        tables_to_create = set(model_tables) - set(existing_tables)
 
-    def use_cards(self, card_list: Dict[str, int]) -> None:
-        """
-        Marks cards as not available, throws error if amount requested to use
-        exceeds amount available.
-        """
-        with self.Session.begin() as session:
-            for card_name, use_count in card_list.items():
-                card = session.scalars(
-                    select(Card).where(Card.name == card_name)
-                ).first()
-                if card is None:
-                    continue
-                if use_count > card.available:
-                    raise CardInsufficientAvailable(
-                        name=card.name, requested=use_count, available=card.available
-                    )
-                card.available -= use_count
+        if tables_to_create:
+            LOGGER.info(f"🏗️ Creating missing database tables: {tables_to_create}")
+            Base.metadata.create_all(bind=engine)
+            LOGGER.info("✨ Database tables created successfully!")
+        else:
+            LOGGER.debug(
+                f"Database already initialized with {len(model_tables)} tables"
+            )
 
-    def free_cards(self, card_list: Dict[str, int]) -> None:
-        """
-        Marks cards as available, throws error if amount freed exceeds quantity
-        """
-        with self.Session.begin() as session:
-            for card_name, free_count in card_list.items():
-                card = session.scalars(
-                    select(Card).where(Card.name == card_name)
-                ).first()
-                if card is None:
-                    continue
-                if card.available + free_count > card.quantity:
-                    raise CardInsufficientQuantity(
-                        name=card.name, requested=free_count, quantity=card.quantity
-                    )
-                card.available += free_count
-
-    def get_card(self, card_name: str) -> Optional[Card]:
-        with self.Session.begin() as session:
-            return session.scalars(select(Card).where(Card.name == card_name)).first()
-
-    def list_cards(self) -> List[Card]:
-        """
-        Returns all cards in proxy list database
-        """
-        with self.Session.begin() as session:
-            cards = session.scalars(select(Card)).all()
-            session.expunge_all()
-            return list(cards)
+        _db_initialized = True
+        return True
+    except Exception as e:
+        LOGGER.error(f"Error initializing database: {e}")
+        return False

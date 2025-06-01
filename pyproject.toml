@@ -1,25 +1,46 @@
 [project]
 name = "netdecker"
 version = "0.1.0"
-description = "Add your description here"
+description = "NetDecker - Magic The Gathering deck and proxy management CLI"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "requests>=2.32.3",
-    "ruff>=0.9.9",
     "sqlalchemy>=2.0.38",
+    "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.9.9",
     "mypy>=1.8.0",
     "types-requests>=2.32.0",
+    "types-pyyaml>=6.0.12.12",
+    "rich>=13.9.4",
 ]
+
+[project.scripts]
+netdecker = "netdecker.main:cli_main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["netdecker*"]
+exclude = ["tests*"]
 
 [tool.ruff]
 # Enable Pyflakes (`F`), pycodestyle (`E`), and import sorting (`I`)
-lint.select = ["E", "F", "I"]
+lint.select = ["E", "F", "W", "C90", "I", "N", "UP", "B", "A", "S", "T20", "Q"]
 lint.ignore = []
 
 # Allow autofix for all enabled rules (when `--fix`) is provided
-lint.fixable = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "UP", "YTT"]
+lint.fixable = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "YTT"]
 lint.unfixable = []
+
+# Allow unused variables when underscore-prefixed
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 # Exclude a variety of commonly ignored directories
 exclude = [
@@ -49,32 +70,23 @@ exclude = [
 # Same as Black
 line-length = 88
 
-# Allow unused variables when underscore-prefixed
-lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
-
 # Assume Python 3.13
-target-version = "py313"
+target-version = "py310"
 
 [tool.ruff.lint.mccabe]
 # Unlike Flake8, default to a complexity level of 10.
 max-complexity = 10
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
 
 [tool.ruff.lint.isort]
 known-first-party = ["netdecker"]
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double"
-
-[tool.mypy]
-python_version = "3.13"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-disallow_untyped_decorators = true
-no_implicit_optional = true
-strict_optional = true
 
 [[tool.mypy.overrides]]
 module = "tests.*"

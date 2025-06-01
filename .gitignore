@@ -8,3 +8,16 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Project Files
+.ruff_cache/
+.cursor/
+.mypy_cache/
+.vscode/
+
+# Log File
+bot.log
+
+# Output Files
+output/
+.decklists/

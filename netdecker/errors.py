@@ -1,4 +1,4 @@
-from typing import List, Tuple
+"""Exception classes for NetDecker."""
 
 
 class Error(Exception):
@@ -9,25 +9,21 @@ class Error(Exception):
 
 class CardListInputError(Error):
     """
-    Exception raised for errors in the LoanList Modal TextInput.
-
-    Attributes:
-        expression -- input expression in which the error occurred
-        message -- explanation of the error
+    Exception raised for errors in parsing card lists.
+    Used when parsing MTGO format card lists.
     """
 
-    def __init__(self, line_errors: List[str]) -> None:
+    def __init__(self, line_errors: list[str]) -> None:
         self.line_errors = line_errors
 
     def __str__(self) -> str:
         message = (
-            "error parsing provided CardList\n\n Please ensure all lines "
-            "follow the format of `<integer> <cardname>`.\n\n "
-            "The following lines raised errors:\n```"
+            "Error parsing provided card list.\n\n"
+            "Please ensure all lines follow the format: <quantity> <cardname>\n\n"
+            "The following lines raised errors:\n```\n"
         )
-        for line in "\n".join(self.line_errors):
-            message += line
-        message += "```"
+        message += "\n".join(self.line_errors)
+        message += "\n```"
         return message
 
 
@@ -36,7 +32,7 @@ class CardNotFoundError(Error):
     Exception raised when unable to find cards in database to return.
     """
 
-    def __init__(self, card_errors: List[Tuple[str, int]]) -> None:
+    def __init__(self, card_errors: list[tuple[str, int]]) -> None:
         self.card_errors = card_errors
 
     def __str__(self) -> str:
@@ -51,7 +47,7 @@ class CardNotFoundError(Error):
         return message
 
 
-class CardInsufficientAvailable(Error):
+class CardInsufficientAvailableError(Error):
     def __init__(self, name: str, requested: int, available: int) -> None:
         self.name = name
         self.requested = requested
@@ -61,7 +57,12 @@ class CardInsufficientAvailable(Error):
         return f"Requested {self.requested} cards when {self.available} available"
 
 
-class CardInsufficientQuantity(Error):
+class CardInsufficientQuantityError(Error):
+    """
+    Exception raised when trying to remove more cards than available.
+    Used by service layer for data integrity.
+    """
+
     def __init__(self, name: str, requested: int, quantity: int) -> None:
         self.name = name
         self.requested = requested
@@ -69,16 +70,23 @@ class CardInsufficientQuantity(Error):
 
     def __str__(self) -> str:
         return (
-            f"insufficient quantity to perform action, requested "
-            f"{self.requested} cards when {self.quantity} available"
+            f"Insufficient quantity to perform action on '{self.name}': "
+            f"requested {self.requested} but only {self.quantity} available"
         )
 
 
-class DomainNotSupported(Error):
-    def __init__(self) -> None:
-        pass
+class DomainNotSupportedError(Error):
+    """Exception raised when a decklist URL domain is not supported."""
+
+    def __str__(self) -> str:
+        return (
+            "Domain not supported. "
+            "Supported domains: cubecobra.com, mtggoldfish.com, moxfield.com"
+        )
 
 
-class UnableToFetchDecklist(Error):
-    def __init__(self) -> None:
-        pass
+class UnableToFetchDecklistError(Error):
+    """Exception raised when unable to fetch a decklist from a URL."""
+
+    def __str__(self) -> str:
+        return "Unable to fetch decklist from the provided URL"
