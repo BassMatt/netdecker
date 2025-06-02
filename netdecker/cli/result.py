@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
 from netdecker.config import LOGGER
 
@@ -23,7 +22,7 @@ class CommandResult:
     success: bool
     message: str | None = None
     message_type: MessageType = MessageType.INFO
-    data: Any = None  # For commands that return data
+    data: object = None  # For commands that return data
 
     @property
     def exit_code(self) -> int:
@@ -46,7 +45,7 @@ class CommandResult:
 
 
 # Convenience constructors
-def success(message: str | None = None, data: Any = None) -> CommandResult:
+def success(message: str | None = None, data: object = None) -> CommandResult:
     """Create a successful result."""
     return CommandResult(
         success=True,
@@ -56,21 +55,21 @@ def success(message: str | None = None, data: Any = None) -> CommandResult:
     )
 
 
-def error(message: str, data: Any = None) -> CommandResult:
+def error(message: str, data: object = None) -> CommandResult:
     """Create an error result."""
     return CommandResult(
         success=False, message=message, message_type=MessageType.ERROR, data=data
     )
 
 
-def warning(message: str, data: Any = None) -> CommandResult:
+def warning(message: str, data: object = None) -> CommandResult:
     """Create a warning result (successful but with warning)."""
     return CommandResult(
         success=True, message=message, message_type=MessageType.WARNING, data=data
     )
 
 
-def info(message: str, data: Any = None) -> CommandResult:
+def info(message: str, data: object = None) -> CommandResult:
     """Create an info result."""
     return CommandResult(
         success=True, message=message, message_type=MessageType.INFO, data=data

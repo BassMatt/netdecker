@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker

@@ -1,7 +1,7 @@
 """Helper functions for CLI commands to reduce duplication."""
 
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import yaml
 
@@ -30,7 +30,7 @@ def find_deck(
     return deck
 
 
-def load_yaml_config(yaml_file: str) -> dict[str, Any] | None:
+def load_yaml_config(yaml_file: str) -> dict[str, object] | None:
     """Load YAML configuration file."""
     yaml_path = Path(yaml_file)
     if not yaml_path.exists():
@@ -41,13 +41,19 @@ def load_yaml_config(yaml_file: str) -> dict[str, Any] | None:
         return yaml.safe_load(f)
 
 
-def extract_deck_configs(config: dict[str, Any]) -> list[dict[str, str]]:
+def extract_deck_configs(config: dict[str, object]) -> list[dict[str, str]]:
     """Extract deck configurations from YAML config."""
     deck_configs = []
-    for format_group in config.get("decklists", []):
-        format_name = format_group.get("format", "Unknown")
-        for deck in format_group.get("decks", []):
+    decklists = cast(list[dict[str, object]], config.get("decklists", []))
+    for format_group in decklists:
+        format_name = cast(str, format_group.get("format", "Unknown"))
+        decks = cast(list[dict[str, object]], format_group.get("decks", []))
+        for deck in decks:
             deck_configs.append(
-                {"name": deck["name"], "format": format_name, "url": deck["url"]}
+                {
+                    "name": cast(str, deck["name"]),
+                    "format": format_name,
+                    "url": cast(str, deck["url"]),
+                }
             )
     return deck_configs

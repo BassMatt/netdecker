@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 from dataclasses import dataclass, field
 from typing import TextIO
@@ -96,19 +94,19 @@ class DeckManagementWorkflow:
         self.decklists = decklist_service
 
     def preview_deck_update(
-        self, url: str, format: str, name: str
+        self, url: str, format_name: str, name: str
     ) -> DeckUpdatePreview:
         """
         Preview updating a single deck without making any changes.
         """
-        preview = DeckUpdatePreview(deck_name=name, deck_format=format)
+        preview = DeckUpdatePreview(deck_name=name, deck_format=format_name)
 
         try:
             # Fetch the new decklist
             new_cards = fetch_decklist(url)
 
             # Check if deck exists
-            existing_deck = self.decklists.get_decklist(name, format)
+            existing_deck = self.decklists.get_decklist(name, format_name)
 
             if existing_deck:
                 # Calculate swaps
@@ -137,12 +135,14 @@ class DeckManagementWorkflow:
 
         return preview
 
-    def apply_deck_update(self, url: str, format: str, name: str) -> DeckUpdatePreview:
+    def apply_deck_update(
+        self, url: str, format_name: str, name: str
+    ) -> DeckUpdatePreview:
         """
         Actually apply the deck update (save changes to database).
         """
         # First get the preview
-        preview = self.preview_deck_update(url, format, name)
+        preview = self.preview_deck_update(url, format_name, name)
 
         if preview.errors:
             return preview
@@ -152,7 +152,7 @@ class DeckManagementWorkflow:
             new_cards = fetch_decklist(url)
 
             # Check if deck exists
-            existing_deck = self.decklists.get_decklist(name, format)
+            existing_deck = self.decklists.get_decklist(name, format_name)
 
             if existing_deck:
                 # Release cards from current deck
@@ -170,7 +170,7 @@ class DeckManagementWorkflow:
                     )
             else:
                 # Create new deck
-                new_deck_id = self.decklists.create_decklist(name, format, url)
+                new_deck_id = self.decklists.create_decklist(name, format_name, url)
                 self.decklists.update_decklist_cards(new_deck_id, new_cards)
 
                 # Allocate cards
@@ -405,7 +405,8 @@ class DeckManagementWorkflow:
         # Write individual deck updates
         for i, deck_update in enumerate(preview.deck_updates, 1):
             file.write(
-                f"--- Deck {i}/{len(preview.deck_updates)}: {deck_update.deck_name} ---\n"
+                f"--- Deck {i}/{len(preview.deck_updates)}: "
+                f"{deck_update.deck_name} ---\n"
             )
 
             if deck_update.errors:

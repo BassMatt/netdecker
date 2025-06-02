@@ -27,36 +27,6 @@ class CardListInputError(Error):
         return message
 
 
-class CardNotFoundError(Error):
-    """
-    Exception raised when unable to find cards in database to return.
-    """
-
-    def __init__(self, card_errors: list[tuple[str, int]]) -> None:
-        self.card_errors = card_errors
-
-    def __str__(self) -> str:
-        message = (
-            "error finding card(s) in database.\n\n Please ensure all cards "
-            "and quantities have matching loans.\n\n "
-            "The following lines raised errors:\n\n```"
-        )
-        for card_name, quantity in self.card_errors:
-            message += f"{quantity} {card_name}\n"
-        message += "```"
-        return message
-
-
-class CardInsufficientAvailableError(Error):
-    def __init__(self, name: str, requested: int, available: int) -> None:
-        self.name = name
-        self.requested = requested
-        self.available = available
-
-    def __str__(self) -> str:
-        return f"Requested {self.requested} cards when {self.available} available"
-
-
 class CardInsufficientQuantityError(Error):
     """
     Exception raised when trying to remove more cards than available.
