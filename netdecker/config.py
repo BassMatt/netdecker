@@ -39,7 +39,15 @@ def get_app_data_dir() -> Path:
 # Get the application data directory and database path
 APP_DATA_DIR = get_app_data_dir()
 DB_PATH = APP_DATA_DIR / "proxy.db"
-DB_CONNECTION_STRING = f"sqlite:///{DB_PATH}"
+
+# Use Turso cloud database if URL is provided, otherwise use local SQLite
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+
+if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+    DB_CONNECTION_STRING = f"{TURSO_DATABASE_URL}?authToken={TURSO_AUTH_TOKEN}"
+else:
+    DB_CONNECTION_STRING = f"sqlite:///{DB_PATH}"
 
 
 def setup_logger() -> logging.Logger:
@@ -54,11 +62,14 @@ def setup_logger() -> logging.Logger:
     f_handler.setLevel(logging.DEBUG)  # File handler level
 
     # Create formatters and add it to handlers
-    log_format = logging.Formatter(
+    # Console format without timestamp
+    console_format = logging.Formatter("%(name)s - %(levelname)s - %(message)s")
+    # File format keeps timestamp for debugging
+    file_format = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    c_handler.setFormatter(log_format)
-    f_handler.setFormatter(log_format)
+    c_handler.setFormatter(console_format)
+    f_handler.setFormatter(file_format)
 
     # Add handlers to the logger
     logger.addHandler(c_handler)

@@ -31,12 +31,19 @@ def fetch_decklist(decklist_url: str) -> dict[str, int]:
 
     domain = parsed_url.netloc
     deck_id = parsed_url.path.split("/")[-1]
+    LOGGER.info(f"Parsed URL: {decklist_url}, Deck ID: {deck_id}, Domain: {domain}")
+
+    # Normalize domain by removing www. prefix if present
+    normalized_domain = (
+        domain.replace("www.", "") if domain.startswith("www.") else domain
+    )
+
     download_url = ""
-    if domain == "www.cubecobra.com":
+    if normalized_domain == "cubecobra.com":
         download_url = f"https://www.cubecobra.com/cube/download/mtgo/{deck_id}"
-    elif domain == "www.mtggoldfish.com":
+    elif normalized_domain == "mtggoldfish.com":
         download_url = f"https://www.mtggoldfish.com/deck/download/{deck_id}"
-    elif domain == "www.moxfield.com":
+    elif normalized_domain == "moxfield.com":
         resp = requests.get(
             f"https://api2.moxfield.com/v2/decks/all/{deck_id}", timeout=30
         )

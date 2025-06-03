@@ -30,6 +30,7 @@ class DeckUpdatePreview:
     swaps: DeckSwaps = field(default_factory=DeckSwaps)
     cards_to_order: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    info_messages: list[str] = field(default_factory=list)
 
     @property
     def total_cards_to_order(self) -> int:
@@ -47,6 +48,7 @@ class DeckUpdatePreview:
             "cards_to_order": self.cards_to_order,
             "total_cards_to_order": self.total_cards_to_order,
             "errors": self.errors,
+            "info_messages": self.info_messages,
         }
 
 
@@ -165,9 +167,22 @@ class DeckManagementWorkflow:
                 # Allocate cards for the new configuration
                 insufficient = self.allocation.allocate_cards(new_cards)
                 if insufficient:
-                    preview.errors.append(
-                        f"Warning: Could not fully allocate: {insufficient}"
+                    # Auto-create proxy cards for unallocatable cards
+                    self.inventory.add_cards(insufficient)
+                    # Try to allocate again after adding proxy cards
+                    remaining_insufficient = self.allocation.allocate_cards(
+                        insufficient
                     )
+                    if remaining_insufficient:
+                        total_insufficient = sum(remaining_insufficient.values())
+                        preview.errors.append(
+                            f"Warning: Could not fully allocate {total_insufficient} cards"
+                        )
+                    else:
+                        total_created = sum(insufficient.values())
+                        preview.info_messages.append(
+                            f"Info: Created {total_created} proxy cards for allocation"
+                        )
             else:
                 # Create new deck
                 new_deck_id = self.decklists.create_decklist(name, format_name, url)
@@ -176,9 +191,22 @@ class DeckManagementWorkflow:
                 # Allocate cards
                 insufficient = self.allocation.allocate_cards(new_cards)
                 if insufficient:
-                    preview.errors.append(
-                        f"Warning: Could not fully allocate: {insufficient}"
+                    # Auto-create proxy cards for unallocatable cards
+                    self.inventory.add_cards(insufficient)
+                    # Try to allocate again after adding proxy cards
+                    remaining_insufficient = self.allocation.allocate_cards(
+                        insufficient
                     )
+                    if remaining_insufficient:
+                        total_insufficient = sum(remaining_insufficient.values())
+                        preview.errors.append(
+                            f"Warning: Could not fully allocate {total_insufficient} cards"
+                        )
+                    else:
+                        total_created = sum(insufficient.values())
+                        preview.info_messages.append(
+                            f"Info: Created {total_created} proxy cards for allocation"
+                        )
 
         except Exception as e:
             preview.errors.append(f"Error applying update: {str(e)}")
@@ -215,13 +243,22 @@ class DeckManagementWorkflow:
         return batch_preview
 
     def write_preview_to_file(
-        self, preview: DeckUpdatePreview | BatchUpdatePreview, file: TextIO
+        self,
+        preview: DeckUpdatePreview | BatchUpdatePreview,
+        file: TextIO,
+        save_mode: bool = False,
     ) -> None:
         """Write a preview to a file in a human-readable format."""
-        if isinstance(preview, DeckUpdatePreview):
-            self._write_single_preview(preview, file)
+        if save_mode:
+            if isinstance(preview, DeckUpdatePreview):
+                self._write_single_save_summary(preview, file)
+            else:
+                self._write_batch_save_summary(preview, file)
         else:
-            self._write_batch_preview(preview, file)
+            if isinstance(preview, DeckUpdatePreview):
+                self._write_single_preview(preview, file)
+            else:
+                self._write_batch_preview(preview, file)
 
     def write_order_to_mpcfill(
         self,
@@ -366,6 +403,64 @@ class DeckManagementWorkflow:
 
         return needs
 
+    def _write_single_save_summary(
+        self, preview: DeckUpdatePreview, file: TextIO
+    ) -> None:
+        """Write a condensed single deck summary for save mode."""
+        if preview.errors:
+            file.write("ERRORS:\n")
+            for error in preview.errors:
+                file.write(f"  - {error}\n")
+        elif preview.info_messages:
+            file.write("INFO:\n")
+            for info in preview.info_messages:
+                file.write(f"  - {info}\n")
+
+        if preview.swaps.has_changes:
+            total_changes = len(preview.swaps.cards_to_add) + len(
+                preview.swaps.cards_to_remove
+            )
+            file.write(
+                f"Updated deck '{preview.deck_name}' ({preview.deck_format}) - {total_changes} changes\n"
+            )
+        else:
+            file.write(
+                f"No changes needed for deck '{preview.deck_name}' ({preview.deck_format})\n"
+            )
+
+        if preview.cards_to_order:
+            file.write(f"Need to order {preview.total_cards_to_order} cards\n")
+        else:
+            file.write("No cards need to be ordered\n")
+
+    def _write_batch_save_summary(
+        self, preview: BatchUpdatePreview, file: TextIO
+    ) -> None:
+        """Write a condensed batch summary for save mode."""
+        successful_updates = 0
+        error_count = 0
+
+        for deck_update in preview.deck_updates:
+            if deck_update.errors:
+                error_count += 1
+                file.write(
+                    f"ERROR - {deck_update.deck_name} ({deck_update.deck_format}): {', '.join(deck_update.errors)}\n"
+                )
+            else:
+                successful_updates += 1
+                total_changes = len(deck_update.swaps.cards_to_add) + len(
+                    deck_update.swaps.cards_to_remove
+                )
+                file.write(
+                    f"✓ {deck_update.deck_name} ({deck_update.deck_format}) - {total_changes} changes\n"
+                )
+
+        file.write(
+            f"\nSummary: {successful_updates} successful, {error_count} errors\n"
+        )
+        if preview.total_order:
+            file.write(f"Total cards to order: {preview.total_cards_to_order}\n")
+
     def _write_single_preview(self, preview: DeckUpdatePreview, file: TextIO) -> None:
         """Write a single deck preview in human-readable format."""
         file.write("=== Deck Update Preview ===\n")
@@ -375,6 +470,12 @@ class DeckManagementWorkflow:
             file.write("ERRORS:\n")
             for error in preview.errors:
                 file.write(f"  - {error}\n")
+            file.write("\n")
+
+        if preview.info_messages:
+            file.write("INFO:\n")
+            for info in preview.info_messages:
+                file.write(f"  - {info}\n")
             file.write("\n")
 
         if preview.swaps.cards_to_remove:

@@ -39,7 +39,7 @@ class TestCLIParsing:
             (
                 [
                     "deck",
-                    "add",
+                    "sync",
                     "Test Deck",
                     "https://example.com",
                     "--format",
@@ -47,7 +47,7 @@ class TestCLIParsing:
                 ],
                 {
                     "command": "deck",
-                    "deck_command": "add",
+                    "deck_command": "sync",
                     "name": "Test Deck",
                     "url": "https://example.com",
                     "format": "Modern",
@@ -111,11 +111,9 @@ class TestCLIValidation:
             ("proxy", "remove"),
             ("deck", "list"),
             ("deck", "show"),
-            ("deck", "add"),
-            ("deck", "update"),
+            ("deck", "sync"),
             ("deck", "delete"),
             ("deck", "batch"),
-            ("deck", "order"),
         ],
     )
     def test_validate_args_valid_commands(self, command, subcommand):

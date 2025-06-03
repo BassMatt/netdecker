@@ -58,6 +58,7 @@ class TestDeckUpdatePreview:
         assert isinstance(preview.swaps, DeckSwaps)
         assert preview.cards_to_order == {}
         assert preview.errors == []
+        assert preview.info_messages == []
         assert preview.total_cards_to_order == 0
 
     def test_total_cards_to_order(self):
@@ -80,6 +81,7 @@ class TestDeckUpdatePreview:
             swaps=swaps,
             cards_to_order={"Force of Will": 1},
             errors=["Test error"],
+            info_messages=["Test info"],
         )
 
         result = preview.to_dict()
@@ -91,6 +93,7 @@ class TestDeckUpdatePreview:
             "cards_to_order": {"Force of Will": 1},
             "total_cards_to_order": 1,
             "errors": ["Test error"],
+            "info_messages": ["Test info"],
         }
         assert result == expected
 
@@ -334,6 +337,7 @@ class TestDeckManagementWorkflow:
             ),
             cards_to_order={"Force of Will": 1},
             errors=["Test error"],
+            info_messages=["Test info"],
         )
 
         output = StringIO()
@@ -344,12 +348,38 @@ class TestDeckManagementWorkflow:
         assert "Test Deck (Modern)" in content
         assert "ERRORS:" in content
         assert "Test error" in content
+        assert "INFO:" in content
+        assert "Test info" in content
         assert "Cards to Remove:" in content
         assert "2x Counterspell" in content
         assert "Cards to Add:" in content
         assert "4x Lightning Bolt" in content
         assert "Cards to Order" in content
         assert "1x Force of Will" in content
+
+    def test_write_preview_to_file_single_save_mode(self, workflow):
+        """Test writing single deck preview to file in save mode."""
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            swaps=DeckSwaps(
+                cards_to_add={"Lightning Bolt": 4}, cards_to_remove={"Counterspell": 2}
+            ),
+            cards_to_order={"Force of Will": 1},
+            info_messages=["Created 1 proxy cards for allocation"],
+        )
+
+        output = StringIO()
+        workflow.write_preview_to_file(preview, output, save_mode=True)
+
+        content = output.getvalue()
+        assert "INFO:" in content
+        assert "Created 1 proxy cards for allocation" in content
+        assert "Updated deck 'Test Deck' (Modern) - 2 changes" in content
+        assert "Need to order 1 cards" in content
+        # Should not contain detailed card lists
+        assert "Cards to Remove:" not in content
+        assert "Cards to Add:" not in content
 
     def test_write_preview_to_file_batch(self, workflow):
         """Test writing batch preview to file."""
@@ -374,6 +404,32 @@ class TestDeckManagementWorkflow:
         assert "Total decks: 2" in content
         assert "Deck 1/2: Deck 1" in content
         assert "Deck 2/2: Deck 2" in content
+
+    def test_write_preview_to_file_batch_save_mode(self, workflow):
+        """Test writing batch preview to file in save mode."""
+        preview1 = DeckUpdatePreview(
+            deck_name="Deck 1",
+            deck_format="Modern",
+            swaps=DeckSwaps(cards_to_add={"Lightning Bolt": 4}),
+        )
+        preview2 = DeckUpdatePreview(
+            deck_name="Deck 2",
+            deck_format="Legacy",
+            cards_to_order={"Force of Will": 1},
+            errors=["Network error"],
+        )
+
+        batch = BatchUpdatePreview(deck_updates=[preview1, preview2])
+
+        output = StringIO()
+        workflow.write_preview_to_file(batch, output, save_mode=True)
+
+        content = output.getvalue()
+        assert "✓ Deck 1 (Modern) - 1 changes" in content
+        assert "ERROR - Deck 2 (Legacy): Network error" in content
+        assert "Summary: 1 successful, 1 errors" in content
+        # Should not contain detailed batch preview format
+        assert "=== Batch Update Preview ===" not in content
 
     @patch("netdecker.workflows.deck_management.get_card_tokens")
     def test_write_order_to_mpcfill_single(self, mock_get_tokens, workflow):

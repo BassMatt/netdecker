@@ -5,7 +5,7 @@ from .commands import deck, proxy
 # Registry of all command modules
 COMMAND_MODULES = [
     proxy,  # Card inventory management
-    deck,  # Deck management (add, update, delete, list, show, order, batch)
+    deck,  # Deck management (add, update, delete, list, show, batch) with --order flag
 ]
 
 

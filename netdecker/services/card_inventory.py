@@ -61,6 +61,10 @@ class CardInventoryService:
                 if card.quantity_owned < card.quantity_available:
                     card.quantity_available = card.quantity_owned
 
+                # Remove card from database if no cards are owned
+                if card.quantity_owned == 0:
+                    session.delete(card)
+
     def get_card(self, card_name: str) -> Card | None:
         """Get a card by name."""
         with self.Session() as session:

@@ -123,4 +123,9 @@ class CardAllocationService:
                     select(Card).where(Card.name == entry.card_name)
                 ).first()
                 if card:
-                    card.quantity_available += entry.quantity
+                    new_available = card.quantity_available + entry.quantity
+                    # Ensure we don't exceed owned quantity (prevents negative "In Use")
+                    if new_available > card.quantity_owned:
+                        card.quantity_available = card.quantity_owned
+                    else:
+                        card.quantity_available = new_available

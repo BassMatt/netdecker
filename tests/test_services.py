@@ -137,6 +137,54 @@ class TestCardInventoryService:
         # Should not raise exception
         service.remove_cards(card_quantities)
 
+    def test_remove_cards_auto_delete_when_zero_owned(self, service, mock_sessionmaker):
+        """Test that cards are automatically deleted when quantity_owned reaches 0."""
+        card_quantities = {"Lightning Bolt": 4}
+
+        mock_session = Mock()
+        mock_sessionmaker.begin.return_value.__enter__ = Mock(return_value=mock_session)
+        mock_sessionmaker.begin.return_value.__exit__ = Mock(return_value=None)
+
+        # Mock existing card with exactly 4 owned (will become 0 after removal)
+        existing_card = Card(
+            name="Lightning Bolt", quantity_owned=4, quantity_available=4
+        )
+        mock_session.scalars.return_value.first.return_value = existing_card
+
+        service.remove_cards(card_quantities)
+
+        # Verify card quantities were updated to 0
+        assert existing_card.quantity_owned == 0
+        assert existing_card.quantity_available == 0
+
+        # Verify session.delete was called to remove the card from database
+        mock_session.delete.assert_called_once_with(existing_card)
+
+    def test_remove_cards_no_delete_when_quantity_remains(
+        self, service, mock_sessionmaker
+    ):
+        """Test that cards are NOT deleted when quantity_owned is greater than 0."""
+        card_quantities = {"Lightning Bolt": 2}
+
+        mock_session = Mock()
+        mock_sessionmaker.begin.return_value.__enter__ = Mock(return_value=mock_session)
+        mock_sessionmaker.begin.return_value.__exit__ = Mock(return_value=None)
+
+        # Mock existing card with 4 owned (will become 2 after removal)
+        existing_card = Card(
+            name="Lightning Bolt", quantity_owned=4, quantity_available=4
+        )
+        mock_session.scalars.return_value.first.return_value = existing_card
+
+        service.remove_cards(card_quantities)
+
+        # Verify card quantities were updated but not to 0
+        assert existing_card.quantity_owned == 2
+        assert existing_card.quantity_available == 2
+
+        # Verify session.delete was NOT called
+        mock_session.delete.assert_not_called()
+
     def test_get_card_exists(self, service, mock_sessionmaker):
         """Test getting an existing card."""
         mock_session = Mock()

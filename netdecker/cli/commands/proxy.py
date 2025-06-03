@@ -36,6 +36,14 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         help='Card entries in format "quantity cardname"',
     )
 
+    # proxy clear command
+    proxy_clear_parser = proxy_subparsers.add_parser(
+        "clear", help="Remove ALL proxy cards from the system"
+    )
+    proxy_clear_parser.add_argument(
+        "--confirm", action="store_true", help="Skip confirmation prompt"
+    )
+
 
 def handle_command(args: argparse.Namespace) -> None:
     """Route proxy subcommands to their appropriate handlers."""
@@ -43,6 +51,7 @@ def handle_command(args: argparse.Namespace) -> None:
         "add": proxy_add,
         "list": proxy_list,
         "remove": proxy_remove,
+        "clear": proxy_clear,
     }
 
     handler = handlers.get(args.proxy_command)
@@ -107,3 +116,28 @@ def proxy_remove(args: argparse.Namespace) -> CommandResult:
 
     total_cards = sum(card_dict.values())
     return success(f"Removed {total_cards} cards from inventory")
+
+
+def proxy_clear(args: argparse.Namespace) -> CommandResult:
+    """Remove all proxy cards from the system."""
+    # Get all cards first
+    cards = card_inventory_service.list_all_cards()
+
+    if not cards:
+        return success("No proxy cards to remove")
+
+    if not args.confirm:
+        confirm = input(
+            f"Are you sure you want to remove all {len(cards)} proxy cards? (y/n): "
+        )
+        if confirm.lower() != "y":
+            return success("Operation cancelled")
+
+    # Create a dictionary of all cards with their owned quantities
+    all_cards = {card.name: card.quantity_owned for card in cards}
+
+    try:
+        card_inventory_service.remove_cards(all_cards)
+        return success(f"Removed {len(cards)} proxy cards from inventory")
+    except Exception as e:
+        return error(f"Failed to remove cards: {e}")
