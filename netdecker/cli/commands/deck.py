@@ -242,11 +242,39 @@ def _generate_swap_file(
                 f.write("\n")
 
             if preview.swaps.cards_to_add:
-                f.write("Cards to Add:\n")
-                for card in sorted(preview.swaps.cards_to_add.keys()):
-                    qty = preview.swaps.cards_to_add[card]
-                    f.write(f"+{qty} {card}\n")
-                f.write("\n")
+                # Separate cards to add into available vs need to order
+                cards_need_order = set(preview.cards_to_order.keys())
+                cards_available = {}
+                cards_to_order = {}
+
+                for card, qty in preview.swaps.cards_to_add.items():
+                    if card in cards_need_order:
+                        # This card needs to be ordered
+                        order_qty = preview.cards_to_order[card]
+                        if qty > order_qty:
+                            # Some available, some need ordering
+                            cards_available[card] = qty - order_qty
+                            cards_to_order[card] = order_qty
+                        else:
+                            # All need ordering
+                            cards_to_order[card] = qty
+                    else:
+                        # All cards are available
+                        cards_available[card] = qty
+
+                if cards_available:
+                    f.write("Cards to Add (Already Available):\n")
+                    for card in sorted(cards_available.keys()):
+                        qty = cards_available[card]
+                        f.write(f"+{qty} {card}\n")
+                    f.write("\n")
+
+                if cards_to_order:
+                    f.write("Cards to Add (Ordered):\n")
+                    for card in sorted(cards_to_order.keys()):
+                        qty = cards_to_order[card]
+                        f.write(f"+{qty} {card}\n")
+                    f.write("\n")
 
             if not preview.swaps.has_changes:
                 f.write("No changes needed.\n")

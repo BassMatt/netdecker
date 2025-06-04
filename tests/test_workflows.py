@@ -352,10 +352,50 @@ class TestDeckManagementWorkflow:
         assert "Test info" in content
         assert "Cards to Remove:" in content
         assert "2x Counterspell" in content
-        assert "Cards to Add:" in content
+        assert "Cards to Add (Already Available):" in content
         assert "4x Lightning Bolt" in content
         assert "Cards to Order" in content
         assert "1x Force of Will" in content
+
+    def test_write_preview_to_file_single_with_mixed_cards(self, workflow):
+        """Test writing single deck preview with both available and cards-to-order."""
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            swaps=DeckSwaps(
+                cards_to_add={
+                    "Lightning Bolt": 4,  # 2 available, 2 need order
+                    "Counterspell": 3,  # All available
+                    "Force of Will": 1,  # All need order
+                },
+                cards_to_remove={"Sol Ring": 1},
+            ),
+            cards_to_order={
+                "Lightning Bolt": 2,  # Need 2 out of 4
+                "Force of Will": 1,  # Need all 1
+            },
+        )
+
+        output = StringIO()
+        workflow.write_preview_to_file(preview, output)
+
+        content = output.getvalue()
+        assert "=== Deck Update Preview ===" in content
+        assert "Test Deck (Modern)" in content
+
+        # Should have cards to remove
+        assert "Cards to Remove:" in content
+        assert "1x Sol Ring" in content
+
+        # Should have available cards section
+        assert "Cards to Add (Already Available):" in content
+        assert "3x Counterspell" in content  # All available
+        assert "2x Lightning Bolt" in content  # 2 out of 4 available
+
+        # Should have cards to order section
+        assert "Cards to Add (Ordered):" in content
+        assert "1x Force of Will" in content  # All need order
+        assert "2x Lightning Bolt" in content  # 2 out of 4 need order
 
     def test_write_preview_to_file_single_save_mode(self, workflow):
         """Test writing single deck preview to file in save mode."""

@@ -426,6 +426,74 @@ class TestDeckSync:
             assert result.success is False
             assert "--format is required when adding a new deck" in result.message
 
+    def test_deck_sync_swap_file_format(self, mock_workflow, tmp_path):
+        """Test that swap file separates available cards from cards to order."""
+        from netdecker.workflows.deck_management import DeckSwaps, DeckUpdatePreview
+
+        # Create a scenario with both available cards and cards to order
+        swaps = DeckSwaps(
+            cards_to_add={
+                "Lightning Bolt": 4,  # 2 available, 2 need order
+                "Counterspell": 3,  # All available
+                "Force of Will": 1,  # All need order
+            },
+            cards_to_remove={"Sol Ring": 1},
+        )
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            swaps=swaps,
+            cards_to_order={
+                "Lightning Bolt": 2,  # Need 2 out of 4
+                "Force of Will": 1,  # Need all 1
+            },
+            errors=[],
+            info_messages=[],
+        )
+        mock_workflow.apply_deck_update.return_value = preview
+
+        args = argparse.Namespace(
+            name="Test Deck",
+            url="https://example.com/deck",
+            format="Modern",
+            save=True,
+            output=str(tmp_path),
+            no_tokens=False,
+        )
+
+        mock_deck = Mock()
+        mock_deck.name = "Test Deck"
+        mock_deck.format = "Modern"
+
+        with patch("netdecker.cli.commands.deck.find_deck", return_value=mock_deck):
+            result = deck_sync(args, mock_workflow)
+
+            assert result.success is True
+
+            # Check swap file content
+            created_dirs = [d for d in tmp_path.iterdir() if d.is_dir()]
+            assert len(created_dirs) == 1
+            deck_dir = created_dirs[0]
+            swap_file = deck_dir / "swaps.txt"
+            assert swap_file.exists()
+
+            # Read and verify swap file content
+            swap_content = swap_file.read_text()
+
+            # Should have cards to remove
+            assert "Cards to Remove:" in swap_content
+            assert "-1 Sol Ring" in swap_content
+
+            # Should have available cards section
+            assert "Cards to Add (Already Available):" in swap_content
+            assert "+3 Counterspell" in swap_content  # All available
+            assert "+2 Lightning Bolt" in swap_content  # 2 out of 4 available
+
+            # Should have cards to order section
+            assert "Cards to Add (Ordered):" in swap_content
+            assert "+1 Force of Will" in swap_content  # All need order
+            assert "+2 Lightning Bolt" in swap_content  # 2 out of 4 need order
+
 
 class TestDeckDelete:
     """Test cases for deck delete command."""

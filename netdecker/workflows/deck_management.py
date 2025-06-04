@@ -485,10 +485,37 @@ class DeckManagementWorkflow:
             file.write("\n")
 
         if preview.swaps.cards_to_add:
-            file.write("Cards to Add:\n")
-            for card, qty in sorted(preview.swaps.cards_to_add.items()):
-                file.write(f"  + {qty}x {card}\n")
-            file.write("\n")
+            # Separate cards to add into available vs need to order
+            cards_need_order = set(preview.cards_to_order.keys())
+            cards_available = {}
+            cards_to_order = {}
+
+            for card, qty in preview.swaps.cards_to_add.items():
+                if card in cards_need_order:
+                    # This card needs to be ordered
+                    order_qty = preview.cards_to_order[card]
+                    if qty > order_qty:
+                        # Some available, some need ordering
+                        cards_available[card] = qty - order_qty
+                        cards_to_order[card] = order_qty
+                    else:
+                        # All need ordering
+                        cards_to_order[card] = qty
+                else:
+                    # All cards are available
+                    cards_available[card] = qty
+
+            if cards_available:
+                file.write("Cards to Add (Already Available):\n")
+                for card, qty in sorted(cards_available.items()):
+                    file.write(f"  + {qty}x {card}\n")
+                file.write("\n")
+
+            if cards_to_order:
+                file.write("Cards to Add (Ordered):\n")
+                for card, qty in sorted(cards_to_order.items()):
+                    file.write(f"  + {qty}x {card}\n")
+                file.write("\n")
 
         if preview.cards_to_order:
             file.write(f"Cards to Order ({preview.total_cards_to_order} total):\n")
