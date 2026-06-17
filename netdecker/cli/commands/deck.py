@@ -14,6 +14,7 @@ from netdecker.services import (
     decklist_service,
 )
 from netdecker.workflows.deck_management import (
+    BatchUpdatePreview,
     DeckManagementWorkflow,
     DeckUpdatePreview,
 )
@@ -64,7 +65,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # deck sync command - unified add/update command
     sync_parser = deck_subparsers.add_parser(
-        "sync", help="Sync a deck (adds if new, updates if exists)"
+        "sync", help="Sync a deck (preview by default; adds if new, updates if exists)"
     )
     sync_parser.add_argument("name", help="Name of the deck")
     sync_parser.add_argument("url", help="URL of the decklist")
@@ -75,7 +76,7 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_parser.add_argument(
         "--save",
         action="store_true",
-        help="Save changes to database and generate all output files (defaults to preview mode)",
+        help="Apply changes to database and generate output files. Creates proxy cards only for missing cards. (Mutually exclusive with --add-to-inventory)",
     )
     sync_parser.add_argument(
         "--output",
@@ -86,6 +87,11 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         "--no-tokens",
         action="store_true",
         help="Don't include tokens in order files",
+    )
+    sync_parser.add_argument(
+        "--add-to-inventory",
+        action="store_true",
+        help="Import deck you already own: adds ALL cards to inventory first, then tracks deck. (Mutually exclusive with --save)",
     )
 
     # deck delete command - delete a deck
@@ -102,13 +108,13 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
 
     # deck batch command - process multiple decks from YAML
     batch_parser = deck_subparsers.add_parser(
-        "batch", help="Process multiple decks from YAML file"
+        "batch", help="Process multiple decks from YAML file (preview by default)"
     )
     batch_parser.add_argument("yaml_file", help="YAML file with deck configurations")
     batch_parser.add_argument(
         "--save",
         action="store_true",
-        help="Save changes to database and generate all output files (defaults to preview mode)",
+        help="Apply changes to database and generate output files. Creates proxy cards only for missing cards. (Mutually exclusive with --add-to-inventory)",
     )
     batch_parser.add_argument(
         "--output",
@@ -120,16 +126,30 @@ def setup_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Don't include tokens in order files",
     )
+    batch_parser.add_argument(
+        "--add-to-inventory",
+        action="store_true",
+        help="Import decks you already own: adds ALL cards to inventory first, then tracks decks. (Mutually exclusive with --save)",
+    )
 
 
 def _validate_output_args(args: argparse.Namespace) -> str | None:
     """Validate output-related arguments. Returns error message if invalid."""
+    # Check for mutually exclusive flags
+    save_flag = getattr(args, "save", False)
+    add_to_inventory_flag = getattr(args, "add_to_inventory", False)
+
+    if save_flag and add_to_inventory_flag:
+        return "--save and --add-to-inventory are mutually exclusive"
+
+    # If add-to-inventory is used, skip output validation
+    if add_to_inventory_flag:
+        return None
+
     # Sync and batch commands only use --save (default to preview mode)
     if args.deck_command in ["sync", "batch"]:
-        save = getattr(args, "save", False)
-
         # If save mode, require output directory
-        if save and not getattr(args, "output", None):
+        if save_flag and not getattr(args, "output", None):
             return "--output directory is required when using --save"
 
     # Validate output directory exists if provided
@@ -284,6 +304,233 @@ def _generate_swap_file(
         LOGGER.error(f"Failed to write swap file: {e}")
 
 
+def _generate_output_files(
+    args: argparse.Namespace,
+    workflow: DeckManagementWorkflow,
+    result: "DeckUpdatePreview",
+    deck_format: str,
+    deck_name: str,
+    is_new_deck: bool,
+) -> None:
+    """Generate all output files for a deck update."""
+    base_output_dir = Path(args.output)
+    deck_output_dir = _create_deck_output_dir(base_output_dir, deck_format, deck_name)
+
+    # Generate swap file
+    _generate_swap_file(deck_name, result, deck_output_dir)
+
+    # Generate order file
+    if result.cards_to_order:
+        order_filename = "order.txt"
+        order_path = deck_output_dir / order_filename
+        try:
+            with open(order_path, "w") as f:
+                workflow.write_order_to_mpcfill(
+                    result,
+                    f,
+                    include_tokens=not args.no_tokens,
+                    fetch_tokens=not args.no_tokens,
+                )
+            LOGGER.info(f"✓ Order written to {order_path}")
+        except Exception as e:
+            LOGGER.error(f"Failed to write order file: {e}")
+
+    # Generate cube CSV for Cube format decks
+    if deck_format.lower() == "cube":
+        # For new decks, we need to find the deck again to get its ID
+        if is_new_deck:
+            deck = find_deck(deck_name, deck_format, workflow, log_error=False)
+        else:
+            deck = find_deck(deck_name, deck_format, workflow, log_error=False)
+
+        if deck:
+            cube_path = deck_output_dir / "cube.csv"
+            try:
+                with open(cube_path, "w") as f:
+                    workflow.write_cube_csv(deck.id, f)
+                LOGGER.info(f"✓ Cube CSV written to {cube_path}")
+            except Exception as e:
+                LOGGER.error(f"Failed to write cube CSV: {e}")
+
+
+def _extract_cards_added_from_messages(info_messages: list[str]) -> int:
+    """Extract total cards added from info messages."""
+    import re
+
+    total_cards = 0
+    for msg in info_messages:
+        if "Added" in msg and "cards to inventory" in msg:
+            match = re.search(r"Added (\d+) cards", msg)
+            if match:
+                total_cards += int(match.group(1))
+    return total_cards
+
+
+def _handle_add_to_inventory_operation(
+    args: argparse.Namespace,
+    workflow: DeckManagementWorkflow,
+    is_batch: bool = False,
+    deck_configs: list[dict] | None = None,
+    deck_name: str | None = None,
+    deck_format: str | None = None,
+    deck_url: str | None = None,
+    is_new_deck: bool = False,
+) -> CommandResult:
+    """Handle add-to-inventory mode for both single deck and batch operations."""
+    if is_batch:
+        if not deck_configs:
+            return error("No deck configurations provided for batch operation")
+
+        LOGGER.info(f"Adding {len(deck_configs)} decks to inventory...")
+        batch_result = workflow.apply_batch_update_with_inventory(deck_configs)
+
+        # Count successes and errors
+        successful_decks = sum(
+            1 for update in batch_result.deck_updates if not update.errors
+        )
+        error_count = sum(1 for update in batch_result.deck_updates if update.errors)
+
+        # Calculate total cards added
+        total_cards_added = sum(
+            _extract_cards_added_from_messages(update.info_messages)
+            for update in batch_result.deck_updates
+        )
+
+        # Display summary
+        LOGGER.info("\nBatch import complete:")
+        LOGGER.info(f"  - Successful decks: {successful_decks}")
+        LOGGER.info(f"  - Total cards added: {total_cards_added}")
+        LOGGER.info(f"  - Errors: {error_count}")
+
+        if error_count > 0:
+            return warning(
+                f"Added {successful_decks} decks with {total_cards_added} cards to inventory. {error_count} errors occurred."
+            )
+        else:
+            return success(
+                f"Added {successful_decks} decks with {total_cards_added} cards to inventory"
+            )
+    else:
+        # Single deck operation
+        if not deck_name or not deck_format or not deck_url:
+            return error("Missing required parameters for single deck operation")
+
+        single_result = workflow.apply_deck_update_with_inventory(
+            deck_url, deck_format, deck_name
+        )
+
+        if single_result.errors:
+            return error(f"Error: {single_result.errors[0]}")
+
+        total_cards = _extract_cards_added_from_messages(single_result.info_messages)
+        action = "Added" if is_new_deck else "Updated"
+
+        if total_cards:
+            return success(
+                f"{action} deck '{deck_name}' ({deck_format}) and added {total_cards} cards to inventory"
+            )
+        else:
+            return success(
+                f"{action} deck '{deck_name}' ({deck_format}) and added cards to inventory"
+            )
+
+
+def _handle_save_operation(
+    args: argparse.Namespace,
+    workflow: DeckManagementWorkflow,
+    is_batch: bool = False,
+    deck_configs: list[dict] | None = None,
+    deck_name: str | None = None,
+    deck_format: str | None = None,
+    deck_url: str | None = None,
+    is_new_deck: bool = False,
+) -> CommandResult:
+    """Handle save mode for both single deck and batch operations."""
+    if is_batch:
+        if not deck_configs:
+            return error("No deck configurations provided for batch operation")
+
+        LOGGER.info(f"Updating {len(deck_configs)} decks...")
+        batch_result = workflow.apply_batch_update(deck_configs)
+        workflow.write_preview_to_file(batch_result, sys.stdout, save_mode=True)
+
+        # Generate output files if output directory specified
+        if args.output:
+            _generate_batch_output_files(args, workflow, batch_result, deck_configs)
+
+        # Check for errors
+        error_count = sum(1 for update in batch_result.deck_updates if update.errors)
+        if error_count > 0:
+            return warning(f"{error_count} decks had errors")
+
+        return success(f"Updated {len(deck_configs)} decks")
+    else:
+        # Single deck operation
+        if not deck_name or not deck_format or not deck_url:
+            return error("Missing required parameters for single deck operation")
+
+        single_result = workflow.apply_deck_update(deck_url, deck_format, deck_name)
+        workflow.write_preview_to_file(single_result, sys.stdout, save_mode=True)
+
+        # Only exit early if there are actual errors (not just info messages)
+        actual_errors = [
+            error for error in single_result.errors if not error.startswith("Info:")
+        ]
+        if actual_errors:
+            return error(actual_errors[0])
+
+        # Generate output files if output directory specified
+        if args.output:
+            _generate_output_files(
+                args, workflow, single_result, deck_format, deck_name, is_new_deck
+            )
+
+        action = "Added" if is_new_deck else "Updated"
+        if single_result.cards_to_order:
+            return warning(
+                f"{action} deck '{deck_name}' ({deck_format}) - "
+                f"need to order {single_result.total_cards_to_order} cards"
+            )
+        else:
+            return success(f"{action} deck '{deck_name}' ({deck_format})")
+
+
+def _handle_preview_operation(
+    args: argparse.Namespace,
+    workflow: DeckManagementWorkflow,
+    is_batch: bool = False,
+    deck_configs: list[dict] | None = None,
+    deck_name: str | None = None,
+    deck_format: str | None = None,
+    deck_url: str | None = None,
+) -> CommandResult:
+    """Handle preview mode for both single deck and batch operations."""
+    if is_batch:
+        if not deck_configs:
+            return error("No deck configurations provided for batch operation")
+
+        LOGGER.info(f"Previewing updates for {len(deck_configs)} decks...")
+        batch_result = workflow.preview_batch_update(deck_configs)
+        workflow.write_preview_to_file(batch_result, sys.stdout)
+
+        LOGGER.info(
+            "\nThis was a preview. Use --save to apply changes and generate files."
+        )
+        return success()
+    else:
+        # Single deck operation
+        if not deck_name or not deck_format or not deck_url:
+            return error("Missing required parameters for single deck operation")
+
+        single_result = workflow.preview_deck_update(deck_url, deck_format, deck_name)
+        workflow.write_preview_to_file(single_result, sys.stdout)
+
+        LOGGER.info(
+            "\nThis was a preview. Use --save to apply changes and generate files."
+        )
+        return success()
+
+
 def deck_sync(
     args: argparse.Namespace, workflow: DeckManagementWorkflow
 ) -> CommandResult:
@@ -304,86 +551,44 @@ def deck_sync(
         deck_format = args.format
         deck_name = args.name
 
-    if args.save:
-        # Save mode - apply changes and generate files
-        result = workflow.apply_deck_update(args.url, deck_format, deck_name)
-
-        # Display condensed results for save mode
-        workflow.write_preview_to_file(result, sys.stdout, save_mode=True)
-
-        # Only exit early if there are actual errors (not just info messages)
-        actual_errors = [
-            error for error in result.errors if not error.startswith("Info:")
-        ]
-        if actual_errors:
-            return error(actual_errors[0])
-
-        # Generate output files if save mode and output directory specified
-        if args.output:
-            base_output_dir = Path(args.output)
-            deck_output_dir = _create_deck_output_dir(
-                base_output_dir, deck_format, deck_name
-            )
-
-            # Generate swap file
-            _generate_swap_file(deck_name, result, deck_output_dir)
-
-            # Generate order file
-            if result.cards_to_order:
-                order_filename = "order.txt"
-                order_path = deck_output_dir / order_filename
-                try:
-                    with open(order_path, "w") as f:
-                        workflow.write_order_to_mpcfill(
-                            result,
-                            f,
-                            include_tokens=not args.no_tokens,
-                            fetch_tokens=not args.no_tokens,
-                        )
-                    LOGGER.info(f"✓ Order written to {order_path}")
-                except Exception as e:
-                    LOGGER.error(f"Failed to write order file: {e}")
-
-            # Generate cube CSV for Cube format decks
-            if deck_format.lower() == "cube":
-                # For new decks, we need to find the deck again to get its ID
-                if is_new_deck:
-                    deck = find_deck(deck_name, deck_format, workflow, log_error=False)
-
-                if deck:
-                    cube_path = deck_output_dir / "cube.csv"
-                    try:
-                        with open(cube_path, "w") as f:
-                            workflow.write_cube_csv(deck.id, f)
-                        LOGGER.info(f"✓ Cube CSV written to {cube_path}")
-                    except Exception as e:
-                        LOGGER.error(f"Failed to write cube CSV: {e}")
-
-        if result.cards_to_order:
-            action = "Added" if is_new_deck else "Updated"
-            return warning(
-                f"{action} deck '{deck_name}' ({deck_format}) - "
-                f"need to order {result.total_cards_to_order} cards"
-            )
-        else:
-            action = "Added" if is_new_deck else "Updated"
-            return success(f"{action} deck '{deck_name}' ({deck_format})")
-    else:
-        # Preview mode (default) - don't save to database
-        if deck:
-            result = workflow.preview_deck_update(args.url, deck.format, deck.name)
-        else:
-            if not args.format:
-                return error("--format is required when adding a new deck")
-            result = workflow.preview_deck_update(args.url, args.format, args.name)
-
-        # Display results
-        workflow.write_preview_to_file(result, sys.stdout)
-
-        LOGGER.info(
-            "\nThis was a preview. Use --save to apply changes and generate files."
+    # Determine operation mode and delegate to appropriate handler
+    if getattr(args, "add_to_inventory", False):
+        return _handle_add_to_inventory_operation(
+            args,
+            workflow,
+            is_batch=False,
+            deck_name=deck_name,
+            deck_format=deck_format,
+            deck_url=args.url,
+            is_new_deck=is_new_deck,
         )
-        return success()
+    elif args.save:
+        return _handle_save_operation(
+            args,
+            workflow,
+            is_batch=False,
+            deck_name=deck_name,
+            deck_format=deck_format,
+            deck_url=args.url,
+            is_new_deck=is_new_deck,
+        )
+    else:
+        # Handle format requirement for preview of new decks
+        if is_new_deck and not args.format:
+            return error("--format is required when adding a new deck")
+
+        # Use existing deck's format for preview if available
+        preview_format = deck.format if deck else args.format
+        preview_name = deck.name if deck else args.name
+
+        return _handle_preview_operation(
+            args,
+            workflow,
+            is_batch=False,
+            deck_name=preview_name,
+            deck_format=preview_format,
+            deck_url=args.url,
+        )
 
 
 def deck_delete(
@@ -450,6 +655,66 @@ def deck_delete(
         return error(f"Failed to delete deck '{deck.name}'")
 
 
+def _generate_batch_output_files(
+    args: argparse.Namespace,
+    workflow: DeckManagementWorkflow,
+    result: "BatchUpdatePreview",
+    deck_configs: list[dict],
+) -> None:
+    """Generate all output files for a batch update."""
+    base_output_dir = Path(args.output)
+    batch_output_dir = _create_batch_output_dir(base_output_dir)
+
+    # Generate swap files for each deck in individual subdirectories
+    for deck_update in result.deck_updates:
+        deck_subdir = (
+            batch_output_dir
+            / f"{deck_update.deck_format.lower()}-{deck_update.deck_name.replace(' ', '_')}"
+        )
+        deck_subdir.mkdir(parents=True, exist_ok=True)
+        _generate_swap_file(deck_update.deck_name, deck_update, deck_subdir)
+
+    # Generate batch order file
+    if result.total_order:
+        order_filename = "batch_order.txt"
+        order_path = batch_output_dir / order_filename
+        try:
+            with open(order_path, "w") as f:
+                workflow.write_order_to_mpcfill(
+                    result,
+                    f,
+                    include_tokens=not args.no_tokens,
+                    fetch_tokens=not args.no_tokens,
+                )
+            LOGGER.info(f"✓ Order written to {order_path}")
+        except Exception as e:
+            LOGGER.error(f"Failed to write order file: {e}")
+
+    # Generate cube CSV for any cube format decks
+    cube_decks = [
+        config for config in deck_configs if config["format"].lower() == "cube"
+    ]
+    if cube_decks:
+        cube_path = batch_output_dir / "cubes.csv"
+        try:
+            # For batch operations, we'll combine all cube decks into one CSV
+            # by writing the first cube deck found
+            for deck_config in cube_decks:
+                deck = find_deck(
+                    deck_config["name"],
+                    deck_config["format"],
+                    workflow,
+                    log_error=False,
+                )
+                if deck:
+                    with open(cube_path, "w") as f:
+                        workflow.write_cube_csv(deck.id, f)
+                    LOGGER.info(f"✓ Cube CSV written to {cube_path}")
+                    break  # Only write the first cube deck
+        except Exception as e:
+            LOGGER.error(f"Failed to write cube CSV: {e}")
+
+
 def deck_batch(
     args: argparse.Namespace, workflow: DeckManagementWorkflow
 ) -> CommandResult:
@@ -462,83 +727,16 @@ def deck_batch(
     if not deck_configs:
         return error("No decks found in YAML file")
 
-    if args.save:
-        # Save mode - apply changes and generate files
-        LOGGER.info(f"Updating {len(deck_configs)} decks...")
-        result = workflow.apply_batch_update(deck_configs)
-
-        # Display condensed results for save mode
-        workflow.write_preview_to_file(result, sys.stdout, save_mode=True)
-
-        # Generate output files if save mode and output directory specified
-        if args.output:
-            base_output_dir = Path(args.output)
-            batch_output_dir = _create_batch_output_dir(base_output_dir)
-
-            # Generate swap files for each deck in individual subdirectories
-            for deck_update in result.deck_updates:
-                deck_subdir = (
-                    batch_output_dir
-                    / f"{deck_update.deck_format.lower()}-{deck_update.deck_name.replace(' ', '_')}"
-                )
-                deck_subdir.mkdir(parents=True, exist_ok=True)
-                _generate_swap_file(deck_update.deck_name, deck_update, deck_subdir)
-
-            # Generate batch order file
-            if result.total_order:
-                order_filename = "batch_order.txt"
-                order_path = batch_output_dir / order_filename
-                try:
-                    with open(order_path, "w") as f:
-                        workflow.write_order_to_mpcfill(
-                            result,
-                            f,
-                            include_tokens=not args.no_tokens,
-                            fetch_tokens=not args.no_tokens,
-                        )
-                    LOGGER.info(f"✓ Order written to {order_path}")
-                except Exception as e:
-                    LOGGER.error(f"Failed to write order file: {e}")
-
-            # Generate cube CSV for any cube format decks
-            cube_decks = [
-                config for config in deck_configs if config["format"].lower() == "cube"
-            ]
-            if cube_decks:
-                cube_path = batch_output_dir / "cubes.csv"
-                try:
-                    # For batch operations, we'll combine all cube decks into one CSV
-                    # by writing the first cube deck found
-                    for deck_config in cube_decks:
-                        deck = find_deck(
-                            deck_config["name"],
-                            deck_config["format"],
-                            workflow,
-                            log_error=False,
-                        )
-                        if deck:
-                            with open(cube_path, "w") as f:
-                                workflow.write_cube_csv(deck.id, f)
-                            LOGGER.info(f"✓ Cube CSV written to {cube_path}")
-                            break  # Only write the first cube deck
-                except Exception as e:
-                    LOGGER.error(f"Failed to write cube CSV: {e}")
-
-        # Check for errors
-        error_count = sum(1 for update in result.deck_updates if update.errors)
-        if error_count > 0:
-            return warning(f"{error_count} decks had errors")
-
-        return success(f"Updated {len(deck_configs)} decks")
-    else:
-        # Preview mode (default) - don't save to database
-        LOGGER.info(f"Previewing updates for {len(deck_configs)} decks...")
-        result = workflow.preview_batch_update(deck_configs)
-
-        # Display results
-        workflow.write_preview_to_file(result, sys.stdout)
-
-        LOGGER.info(
-            "\nThis was a preview. Use --save to apply changes and generate files."
+    # Determine operation mode and delegate to appropriate handler
+    if getattr(args, "add_to_inventory", False):
+        return _handle_add_to_inventory_operation(
+            args, workflow, is_batch=True, deck_configs=deck_configs
         )
-        return success()
+    elif args.save:
+        return _handle_save_operation(
+            args, workflow, is_batch=True, deck_configs=deck_configs
+        )
+    else:
+        return _handle_preview_operation(
+            args, workflow, is_batch=True, deck_configs=deck_configs
+        )

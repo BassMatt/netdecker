@@ -137,6 +137,65 @@ class DeckManagementWorkflow:
 
         return preview
 
+    def _apply_deck_changes(
+        self,
+        new_cards: dict[str, int],
+        format_name: str,
+        name: str,
+        url: str,
+        preview: DeckUpdatePreview,
+        auto_create_proxies: bool = True,
+    ) -> None:
+        """
+        Common logic for applying deck changes (create/update deck and allocate cards).
+
+        Args:
+            new_cards: Cards to set for the deck
+            format_name: Format of the deck
+            name: Name of the deck
+            url: URL of the deck
+            preview: Preview object to update with results
+            auto_create_proxies: Whether to auto-create proxy cards for insufficient inventory
+        """
+        existing_deck = self.decklists.get_decklist(name, format_name)
+
+        if existing_deck:
+            # Release cards from current deck
+            self.allocation.release_decklist_allocation(existing_deck.id)
+
+            # Update the decklist
+            self.decklists.update_decklist_cards(existing_deck.id, new_cards)
+            self.decklists.update_decklist_url(existing_deck.id, url)
+            deck_id = existing_deck.id
+        else:
+            # Create new deck
+            deck_id = self.decklists.create_decklist(name, format_name, url)
+            self.decklists.update_decklist_cards(deck_id, new_cards)
+
+        # Allocate cards for the new configuration
+        insufficient = self.allocation.allocate_cards(new_cards)
+        if insufficient and auto_create_proxies:
+            # Auto-create proxy cards for unallocatable cards
+            self.inventory.add_cards(insufficient)
+            # Try to allocate again after adding proxy cards
+            remaining_insufficient = self.allocation.allocate_cards(insufficient)
+            if remaining_insufficient:
+                total_insufficient = sum(remaining_insufficient.values())
+                preview.errors.append(
+                    f"Warning: Could not fully allocate {total_insufficient} cards"
+                )
+            else:
+                total_created = sum(insufficient.values())
+                preview.info_messages.append(
+                    f"Info: Created {total_created} proxy cards for allocation"
+                )
+        elif insufficient and not auto_create_proxies:
+            # Don't auto-create proxies, just report the issue
+            total_insufficient = sum(insufficient.values())
+            preview.errors.append(
+                f"Warning: Could not fully allocate {total_insufficient} cards"
+            )
+
     def apply_deck_update(
         self, url: str, format_name: str, name: str
     ) -> DeckUpdatePreview:
@@ -153,60 +212,32 @@ class DeckManagementWorkflow:
             # Fetch the new decklist again
             new_cards = fetch_decklist(url)
 
-            # Check if deck exists
-            existing_deck = self.decklists.get_decklist(name, format_name)
+            self._apply_deck_changes(new_cards, format_name, name, url, preview)
 
-            if existing_deck:
-                # Release cards from current deck
-                self.allocation.release_decklist_allocation(existing_deck.id)
+        except Exception as e:
+            preview.errors.append(f"Error applying update: {str(e)}")
 
-                # Update the decklist
-                self.decklists.update_decklist_cards(existing_deck.id, new_cards)
-                self.decklists.update_decklist_url(existing_deck.id, url)
+        return preview
 
-                # Allocate cards for the new configuration
-                insufficient = self.allocation.allocate_cards(new_cards)
-                if insufficient:
-                    # Auto-create proxy cards for unallocatable cards
-                    self.inventory.add_cards(insufficient)
-                    # Try to allocate again after adding proxy cards
-                    remaining_insufficient = self.allocation.allocate_cards(
-                        insufficient
-                    )
-                    if remaining_insufficient:
-                        total_insufficient = sum(remaining_insufficient.values())
-                        preview.errors.append(
-                            f"Warning: Could not fully allocate {total_insufficient} cards"
-                        )
-                    else:
-                        total_created = sum(insufficient.values())
-                        preview.info_messages.append(
-                            f"Info: Created {total_created} proxy cards for allocation"
-                        )
-            else:
-                # Create new deck
-                new_deck_id = self.decklists.create_decklist(name, format_name, url)
-                self.decklists.update_decklist_cards(new_deck_id, new_cards)
+    def apply_deck_update_with_inventory(
+        self, url: str, format_name: str, name: str
+    ) -> DeckUpdatePreview:
+        """
+        Apply deck update while adding all cards to inventory first.
+        This is used when importing decks you already own.
+        """
+        preview = DeckUpdatePreview(deck_name=name, deck_format=format_name)
 
-                # Allocate cards
-                insufficient = self.allocation.allocate_cards(new_cards)
-                if insufficient:
-                    # Auto-create proxy cards for unallocatable cards
-                    self.inventory.add_cards(insufficient)
-                    # Try to allocate again after adding proxy cards
-                    remaining_insufficient = self.allocation.allocate_cards(
-                        insufficient
-                    )
-                    if remaining_insufficient:
-                        total_insufficient = sum(remaining_insufficient.values())
-                        preview.errors.append(
-                            f"Warning: Could not fully allocate {total_insufficient} cards"
-                        )
-                    else:
-                        total_created = sum(insufficient.values())
-                        preview.info_messages.append(
-                            f"Info: Created {total_created} proxy cards for allocation"
-                        )
+        try:
+            # Fetch the new decklist
+            new_cards = fetch_decklist(url)
+
+            # Add all cards to inventory as owned cards first
+            total_cards = sum(new_cards.values())
+            self.inventory.add_cards(new_cards)
+            preview.info_messages.append(f"Added {total_cards} cards to inventory")
+
+            self._apply_deck_changes(new_cards, format_name, name, url, preview, False)
 
         except Exception as e:
             preview.errors.append(f"Error applying update: {str(e)}")
@@ -236,6 +267,22 @@ class DeckManagementWorkflow:
 
         for config in deck_configs:
             deck_preview = self.apply_deck_update(
+                config["url"], config["format"], config["name"]
+            )
+            batch_preview.deck_updates.append(deck_preview)
+
+        return batch_preview
+
+    def apply_batch_update_with_inventory(
+        self, deck_configs: list[dict]
+    ) -> "BatchUpdatePreview":
+        """
+        Apply updates to multiple decks while adding all cards to inventory first.
+        """
+        batch_preview = BatchUpdatePreview()
+
+        for config in deck_configs:
+            deck_preview = self.apply_deck_update_with_inventory(
                 config["url"], config["format"], config["name"]
             )
             batch_preview.deck_updates.append(deck_preview)

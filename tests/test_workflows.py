@@ -600,3 +600,230 @@ class TestDeckManagementWorkflow:
             "Counterspell": 2,  # Need 2, have 0 available = 2 to order
         }
         assert result == expected
+
+    @patch("netdecker.workflows.deck_management.fetch_decklist")
+    def test_apply_deck_update_with_inventory_new_deck(
+        self, mock_fetch, workflow, mock_services
+    ):
+        """Test applying deck update with inventory addition for a new deck."""
+        # Mock fetch_decklist
+        mock_fetch.return_value = {"Lightning Bolt": 4, "Counterspell": 2}
+
+        # Mock deck doesn't exist
+        mock_services["decklists"].get_decklist.return_value = None
+
+        # Mock deck creation
+        mock_services["decklists"].create_decklist.return_value = 123
+        mock_services["allocation"].allocate_cards.return_value = {}
+
+        result = workflow.apply_deck_update_with_inventory(
+            "http://test.com", "Modern", "New Deck"
+        )
+
+        # Verify cards were added to inventory
+        mock_services["inventory"].add_cards.assert_called_once_with(
+            {"Lightning Bolt": 4, "Counterspell": 2}
+        )
+
+        # Verify deck was created
+        mock_services["decklists"].create_decklist.assert_called_once_with(
+            "New Deck", "Modern", "http://test.com"
+        )
+        mock_services["decklists"].update_decklist_cards.assert_called_once_with(
+            123, {"Lightning Bolt": 4, "Counterspell": 2}
+        )
+
+        # Verify cards were allocated
+        mock_services["allocation"].allocate_cards.assert_called_once_with(
+            {"Lightning Bolt": 4, "Counterspell": 2}
+        )
+
+        # Check result
+        assert result.deck_name == "New Deck"
+        assert result.deck_format == "Modern"
+        assert "Added 6 cards to inventory" in result.info_messages
+
+    @patch("netdecker.workflows.deck_management.fetch_decklist")
+    def test_apply_deck_update_with_inventory_existing_deck(
+        self, mock_fetch, workflow, mock_services
+    ):
+        """Test applying deck update with inventory addition for an existing deck."""
+        # Mock fetch_decklist
+        mock_fetch.return_value = {"Lightning Bolt": 4}
+
+        # Mock existing deck
+        existing_deck = Decklist(id=1, name="Test Deck", format="Modern")
+        mock_services["decklists"].get_decklist.return_value = existing_deck
+        mock_services["allocation"].allocate_cards.return_value = {}
+
+        result = workflow.apply_deck_update_with_inventory(
+            "http://test.com", "Modern", "Test Deck"
+        )
+
+        # Verify cards were added to inventory
+        mock_services["inventory"].add_cards.assert_called_once_with(
+            {"Lightning Bolt": 4}
+        )
+
+        # Verify existing deck was updated
+        mock_services["allocation"].release_decklist_allocation.assert_called_once_with(
+            1
+        )
+        mock_services["decklists"].update_decklist_cards.assert_called_once_with(
+            1, {"Lightning Bolt": 4}
+        )
+        mock_services["decklists"].update_decklist_url.assert_called_once_with(
+            1, "http://test.com"
+        )
+
+        # Check result
+        assert result.deck_name == "Test Deck"
+        assert result.deck_format == "Modern"
+        assert "Added 4 cards to inventory" in result.info_messages
+
+    def test_apply_batch_update_with_inventory(self, workflow):
+        """Test applying batch update with inventory addition."""
+        deck_configs = [
+            {"url": "http://deck1.com", "format": "Modern", "name": "Deck 1"},
+            {"url": "http://deck2.com", "format": "Legacy", "name": "Deck 2"},
+        ]
+
+        # Mock apply_deck_update_with_inventory
+        with patch.object(workflow, "apply_deck_update_with_inventory") as mock_apply:
+            mock_apply.side_effect = [
+                DeckUpdatePreview(
+                    deck_name="Deck 1",
+                    deck_format="Modern",
+                    info_messages=["Added 60 cards to inventory"],
+                ),
+                DeckUpdatePreview(
+                    deck_name="Deck 2",
+                    deck_format="Legacy",
+                    info_messages=["Added 75 cards to inventory"],
+                ),
+            ]
+
+            result = workflow.apply_batch_update_with_inventory(deck_configs)
+
+            assert len(result.deck_updates) == 2
+            assert mock_apply.call_count == 2
+            # Verify the total cards calculation would work
+            total_cards = 0
+            for update in result.deck_updates:
+                for msg in update.info_messages:
+                    if "Added" in msg and "cards to inventory" in msg:
+                        import re
+
+                        match = re.search(r"Added (\d+) cards", msg)
+                        if match:
+                            total_cards += int(match.group(1))
+            assert total_cards == 135
+
+    def test_apply_deck_changes_new_deck(self, workflow, mock_services):
+        """Test the _apply_deck_changes helper method for a new deck."""
+        from netdecker.workflows.deck_management import DeckUpdatePreview
+
+        # Mock deck doesn't exist
+        mock_services["decklists"].get_decklist.return_value = None
+        mock_services["decklists"].create_decklist.return_value = 123
+        mock_services["allocation"].allocate_cards.return_value = {}
+
+        new_cards = {"Lightning Bolt": 4, "Counterspell": 2}
+        preview = DeckUpdatePreview(deck_name="Test Deck", deck_format="Modern")
+
+        workflow._apply_deck_changes(
+            new_cards, "Modern", "Test Deck", "http://test.com", preview
+        )
+
+        # Verify deck was created
+        mock_services["decklists"].create_decklist.assert_called_once_with(
+            "Test Deck", "Modern", "http://test.com"
+        )
+        mock_services["decklists"].update_decklist_cards.assert_called_once_with(
+            123, new_cards
+        )
+
+        # Verify cards were allocated
+        mock_services["allocation"].allocate_cards.assert_called_once_with(new_cards)
+
+        # Should have no errors since allocation succeeded
+        assert not preview.errors
+
+    def test_apply_deck_changes_existing_deck_with_proxies(
+        self, workflow, mock_services
+    ):
+        """Test the _apply_deck_changes helper method for an existing deck with insufficient cards."""
+        from netdecker.models.decklist import Decklist
+        from netdecker.workflows.deck_management import DeckUpdatePreview
+
+        # Mock existing deck
+        existing_deck = Decklist(id=1, name="Test Deck", format="Modern")
+        mock_services["decklists"].get_decklist.return_value = existing_deck
+
+        # Mock allocation that needs proxy cards
+        insufficient_cards = {"Force of Will": 1}
+        mock_services["allocation"].allocate_cards.side_effect = [
+            insufficient_cards,  # First attempt fails
+            {},  # Second attempt succeeds after adding proxies
+        ]
+
+        new_cards = {"Lightning Bolt": 4, "Force of Will": 1}
+        preview = DeckUpdatePreview(deck_name="Test Deck", deck_format="Modern")
+
+        workflow._apply_deck_changes(
+            new_cards,
+            "Modern",
+            "Test Deck",
+            "http://test.com",
+            preview,
+            auto_create_proxies=True,
+        )
+
+        # Verify existing deck was updated
+        mock_services["allocation"].release_decklist_allocation.assert_called_once_with(
+            1
+        )
+        mock_services["decklists"].update_decklist_cards.assert_called_once_with(
+            1, new_cards
+        )
+        mock_services["decklists"].update_decklist_url.assert_called_once_with(
+            1, "http://test.com"
+        )
+
+        # Verify proxy cards were created
+        mock_services["inventory"].add_cards.assert_called_once_with(insufficient_cards)
+
+        # Should have success message about proxy creation
+        assert any("Created 1 proxy cards" in msg for msg in preview.info_messages)
+
+    def test_apply_deck_changes_no_auto_proxies(self, workflow, mock_services):
+        """Test the _apply_deck_changes helper method with auto_create_proxies=False."""
+        from netdecker.workflows.deck_management import DeckUpdatePreview
+
+        # Mock deck doesn't exist
+        mock_services["decklists"].get_decklist.return_value = None
+        mock_services["decklists"].create_decklist.return_value = 123
+
+        # Mock allocation that fails
+        insufficient_cards = {"Force of Will": 1}
+        mock_services["allocation"].allocate_cards.return_value = insufficient_cards
+
+        new_cards = {"Lightning Bolt": 4, "Force of Will": 1}
+        preview = DeckUpdatePreview(deck_name="Test Deck", deck_format="Modern")
+
+        workflow._apply_deck_changes(
+            new_cards,
+            "Modern",
+            "Test Deck",
+            "http://test.com",
+            preview,
+            auto_create_proxies=False,
+        )
+
+        # Should not have created proxy cards
+        mock_services["inventory"].add_cards.assert_not_called()
+
+        # Should have error message about insufficient cards
+        assert any(
+            "Could not fully allocate 1 cards" in error for error in preview.errors
+        )

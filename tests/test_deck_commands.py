@@ -114,6 +114,33 @@ class TestDeckHandleCommand:
 
             capture_exits.assert_called_once_with(1)
 
+    def test_handle_command_mutually_exclusive_flags(
+        self, capture_exits, mock_workflow
+    ):
+        """Test that handle_command properly validates mutually exclusive flags."""
+        args = argparse.Namespace(
+            deck_command="sync",
+            save=True,
+            add_to_inventory=True,
+            output="/tmp",
+            name="Test Deck",
+            url="https://example.com",
+            format="Modern",
+            no_tokens=False,
+        )
+
+        with (
+            patch("pathlib.Path.exists", return_value=True),
+            patch("pathlib.Path.is_dir", return_value=True),
+        ):
+            handle_command(args)
+
+            # Should have been called at least once with code 1 due to validation error
+            assert capture_exits.call_count >= 1
+            # First call should be the validation error
+            first_call = capture_exits.call_args_list[0]
+            assert first_call[0][0] == 1
+
 
 class TestDeckList:
     """Test cases for deck list command."""
@@ -494,6 +521,68 @@ class TestDeckSync:
             assert "+1 Force of Will" in swap_content  # All need order
             assert "+2 Lightning Bolt" in swap_content  # 2 out of 4 need order
 
+    def test_deck_sync_add_to_inventory(self, mock_workflow):
+        """Test deck sync with --add-to-inventory flag."""
+        from netdecker.workflows.deck_management import DeckUpdatePreview
+
+        # Mock the workflow method
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            info_messages=["Added 75 cards to inventory"],
+        )
+        mock_workflow.apply_deck_update_with_inventory.return_value = preview
+
+        args = argparse.Namespace(
+            name="Test Deck",
+            url="https://example.com/deck",
+            format="Modern",
+            add_to_inventory=True,
+            save=False,
+            output=None,
+            no_tokens=False,
+        )
+
+        with patch("netdecker.cli.commands.deck.find_deck", return_value=None):
+            result = deck_sync(args, mock_workflow)
+
+            assert result.success is True
+            assert (
+                "Added deck 'Test Deck' (Modern) and added 75 cards to inventory"
+                in result.message
+            )
+            mock_workflow.apply_deck_update_with_inventory.assert_called_once_with(
+                "https://example.com/deck", "Modern", "Test Deck"
+            )
+
+    def test_deck_sync_add_to_inventory_no_format_error(self, mock_workflow):
+        """Test deck sync with --add-to-inventory requires format."""
+        from netdecker.workflows.deck_management import DeckUpdatePreview
+
+        # Mock the workflow method to return a preview with errors
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            errors=["Some error occurred"],
+        )
+        mock_workflow.apply_deck_update_with_inventory.return_value = preview
+
+        args = argparse.Namespace(
+            name="Test Deck",
+            url="https://example.com/deck",
+            format=None,  # Missing format
+            add_to_inventory=True,
+            save=False,
+            output=None,
+            no_tokens=False,
+        )
+
+        with patch("netdecker.cli.commands.deck.find_deck", return_value=None):
+            result = deck_sync(args, mock_workflow)
+
+            assert result.success is False
+            assert "--format is required when adding a new deck" in result.message
+
 
 class TestDeckDelete:
     """Test cases for deck delete command."""
@@ -708,6 +797,41 @@ class TestDeckBatch:
                 # Check that cube CSV was created in the batch directory
                 assert (batch_dir / "cubes.csv").exists()
 
+    def test_deck_batch_add_to_inventory(self, mock_workflow, temp_yaml_file):
+        """Test batch processing with --add-to-inventory flag."""
+        from netdecker.workflows.deck_management import (
+            BatchUpdatePreview,
+            DeckUpdatePreview,
+        )
+
+        # Mock batch result
+        preview1 = DeckUpdatePreview(
+            deck_name="Deck 1",
+            deck_format="Modern",
+            info_messages=["Added 60 cards to inventory"],
+        )
+        preview2 = DeckUpdatePreview(
+            deck_name="Deck 2",
+            deck_format="Legacy",
+            info_messages=["Added 75 cards to inventory"],
+        )
+        batch_preview = BatchUpdatePreview(deck_updates=[preview1, preview2])
+        mock_workflow.apply_batch_update_with_inventory.return_value = batch_preview
+
+        args = argparse.Namespace(
+            yaml_file=str(temp_yaml_file),
+            add_to_inventory=True,
+            save=False,
+            output=None,
+            no_tokens=False,
+        )
+
+        result = deck_batch(args, mock_workflow)
+
+        assert result.success is True
+        assert "Added 2 decks with 135 cards to inventory" in result.message
+        mock_workflow.apply_batch_update_with_inventory.assert_called_once()
+
 
 class TestDeckValidation:
     """Test cases for deck command validation."""
@@ -806,3 +930,179 @@ class TestDeckValidation:
 
         result = _validate_output_args(args)
         assert result is None
+
+    def test_validate_output_args_mutually_exclusive_flags(self):
+        """Test that --save and --add-to-inventory are mutually exclusive."""
+        from netdecker.cli.commands.deck import _validate_output_args
+
+        args = argparse.Namespace(
+            deck_command="sync",
+            save=True,
+            add_to_inventory=True,
+            output="/tmp",
+        )
+
+        result = _validate_output_args(args)
+        assert result == "--save and --add-to-inventory are mutually exclusive"
+
+    def test_validate_output_args_add_to_inventory_skips_output_validation(self):
+        """Test that --add-to-inventory skips output validation."""
+        from netdecker.cli.commands.deck import _validate_output_args
+
+        args = argparse.Namespace(
+            deck_command="sync",
+            save=False,
+            add_to_inventory=True,
+            output=None,  # No output provided
+        )
+
+        result = _validate_output_args(args)
+        assert result is None  # Should pass validation
+
+
+class TestDeckHelperFunctions:
+    """Test cases for deck helper functions."""
+
+    def test_extract_cards_added_from_messages(self):
+        """Test extracting card counts from info messages."""
+        from netdecker.cli.commands.deck import _extract_cards_added_from_messages
+
+        # Test with typical messages
+        messages = [
+            "Added 75 cards to inventory",
+            "Some other message",
+            "Added 60 cards to inventory",
+            "Info: Created 5 proxy cards for allocation",
+        ]
+
+        result = _extract_cards_added_from_messages(messages)
+        assert result == 135  # 75 + 60
+
+    def test_extract_cards_added_from_messages_no_matches(self):
+        """Test extracting card counts when no matching messages exist."""
+        from netdecker.cli.commands.deck import _extract_cards_added_from_messages
+
+        messages = [
+            "Some other message",
+            "Info: Created 5 proxy cards for allocation",
+            "No cards added here",
+        ]
+
+        result = _extract_cards_added_from_messages(messages)
+        assert result == 0
+
+    def test_handle_add_to_inventory_operation_single_deck(self, mock_workflow):
+        """Test add-to-inventory helper for single deck operation."""
+        from netdecker.cli.commands.deck import _handle_add_to_inventory_operation
+        from netdecker.workflows.deck_management import DeckUpdatePreview
+
+        # Mock the workflow method
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            info_messages=["Added 75 cards to inventory"],
+        )
+        mock_workflow.apply_deck_update_with_inventory.return_value = preview
+
+        args = argparse.Namespace(output=None, no_tokens=False)
+
+        result = _handle_add_to_inventory_operation(
+            args,
+            mock_workflow,
+            is_batch=False,
+            deck_name="Test Deck",
+            deck_format="Modern",
+            deck_url="https://example.com",
+            is_new_deck=True,
+        )
+
+        assert result.success is True
+        assert (
+            "Added deck 'Test Deck' (Modern) and added 75 cards to inventory"
+            in result.message
+        )
+
+    def test_handle_add_to_inventory_operation_batch(self, mock_workflow):
+        """Test add-to-inventory helper for batch operation."""
+        from netdecker.cli.commands.deck import _handle_add_to_inventory_operation
+        from netdecker.workflows.deck_management import (
+            BatchUpdatePreview,
+            DeckUpdatePreview,
+        )
+
+        # Mock batch result
+        preview1 = DeckUpdatePreview(
+            deck_name="Deck 1",
+            deck_format="Modern",
+            info_messages=["Added 60 cards to inventory"],
+        )
+        preview2 = DeckUpdatePreview(
+            deck_name="Deck 2",
+            deck_format="Legacy",
+            info_messages=["Added 75 cards to inventory"],
+        )
+        batch_preview = BatchUpdatePreview(deck_updates=[preview1, preview2])
+        mock_workflow.apply_batch_update_with_inventory.return_value = batch_preview
+
+        args = argparse.Namespace(output=None, no_tokens=False)
+        deck_configs = [
+            {"name": "Deck 1", "format": "Modern", "url": "https://example.com"}
+        ]
+
+        result = _handle_add_to_inventory_operation(
+            args, mock_workflow, is_batch=True, deck_configs=deck_configs
+        )
+
+        assert result.success is True
+        assert "Added 2 decks with 135 cards to inventory" in result.message
+
+    def test_handle_save_operation_single_deck(self, mock_workflow, tmp_path):
+        """Test save helper for single deck operation."""
+        from netdecker.cli.commands.deck import _handle_save_operation
+        from netdecker.workflows.deck_management import DeckSwaps, DeckUpdatePreview
+
+        # Mock the workflow method
+        swaps = DeckSwaps(cards_to_add={"Lightning Bolt": 4})
+        preview = DeckUpdatePreview(
+            deck_name="Test Deck",
+            deck_format="Modern",
+            swaps=swaps,
+            cards_to_order={"Lightning Bolt": 4},
+        )
+        mock_workflow.apply_deck_update.return_value = preview
+
+        args = argparse.Namespace(output=str(tmp_path), no_tokens=False)
+
+        result = _handle_save_operation(
+            args,
+            mock_workflow,
+            is_batch=False,
+            deck_name="Test Deck",
+            deck_format="Modern",
+            deck_url="https://example.com",
+            is_new_deck=True,
+        )
+
+        assert result.success is True
+        # Should be a warning due to cards_to_order
+        assert "need to order 4 cards" in result.message
+
+    def test_handle_preview_operation_single_deck(self, mock_workflow):
+        """Test preview helper for single deck operation."""
+        from netdecker.cli.commands.deck import _handle_preview_operation
+
+        args = argparse.Namespace(output=None, no_tokens=False)
+
+        result = _handle_preview_operation(
+            args,
+            mock_workflow,
+            is_batch=False,
+            deck_name="Test Deck",
+            deck_format="Modern",
+            deck_url="https://example.com",
+        )
+
+        assert result.success is True
+        mock_workflow.preview_deck_update.assert_called_once_with(
+            "https://example.com", "Modern", "Test Deck"
+        )
